@@ -61,6 +61,7 @@ std::vector<std::string> _quantizable_aten_funcs = {
     "add_",
     "add",
     "cat",
+    "lstm",
 };
 
 // These are the prim::CallFunctions that doesn't require observation and
@@ -986,10 +987,25 @@ void InsertObserversHelper::preprocess(
   }
 }
 
-// Returns true if the value is the weight to LSTM operator.
-bool isDynamicLSTMWeight(Value* v, Use use, bool is_dynamic) {
-  return is_dynamic && use.user->kind() == Symbol::aten("lstm") &&
-      (use.offset == 2);
+bool useQuantizable(Value* v, Use use, bool is_dynamic) {
+  Node* n = use.user;
+
+  const AtenFuncArgs& aten_func_args = AtenFuncArgs({{"lstm", 2}});
+  const CallFuncArgs& call_func_args = CallFuncArgs({{"batch_norm", 1}});
+  for (const auto& func_arg : aten_func_args) {
+    if (n->kind() == Symbol::aten(func_arg.func_name)) {
+      return v == n->inputs().at(func_arg.arg_index);
+    }
+  }
+
+  for (const auto& func_arg : call_func_args) {
+    if (n->kind() == prim::CallFunction &&
+        getFuncName(n->inputs()[0]) == func_arg.func_name) {
+      return v == n->inputs().at(func_arg.arg_index);
+    }
+  }
+
+  return true;
 }
 
 // TODO: remove this as a class method
@@ -1007,9 +1023,9 @@ bool InsertObserversHelper::valueNeedsToBeQuantized(Value* v) {
       return true;
     }
   }
-  // Check whether user is quantizable
+  // Check whether node input value is quantizable
   for (const auto& use : v->uses()) {
-    if (nodeQuantizable(use.user) || isDynamicLSTMWeight(v, use, is_dynamic)) {
+    if (nodeQuantizable(use.user) && useQuantizable(v, use, is_dynamic)) {
       return true;
     }
   }
